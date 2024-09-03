@@ -1,16 +1,13 @@
 .{
-    .name = "examples/raspberrypi/rp2040",
+    .name = "rtt_example",
     .version = "0.0.0",
     .dependencies = .{
         .@"microzig/build" = .{ .path = "../microzig/build" },
         .@"microzig/bsp/raspberrypi/rp2040" = .{ .path = "../microzig/bsp/raspberrypi/rp2040" },
         .rtt = .{ .path = "../" },
-        // .@"microzig/tools/rtt" = .{ .path = "../../tools/rtt" },
     },
 
     .paths = .{
-        "LICENSE",
-        "README.md",
         "build.zig",
         "build.zig.zon",
         "src",
