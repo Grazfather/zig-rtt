@@ -11,6 +11,7 @@ Functionality not yet supported from original:
 # TODO:
 - Implementation
     - Fix bug once buffer limit is hit
+    - Implement different modes for up channel (critical, as this could block indefinitely when probe is not connected)
     - make accesses to read/write offsets `volatile`
     - add memory barriers where neccessary
     - add locking where neccessary 

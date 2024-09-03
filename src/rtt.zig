@@ -73,19 +73,19 @@ pub const UpChannel = extern struct {
     }
 
     pub fn mode(self: *UpChannel) ChannelMode {
-        return std.meta.intToEnum(ChannelMode, self.mode & 3);
+        return std.meta.intToEnum(ChannelMode, self.flags & 3) catch unreachable;
     }
 
     pub fn setMode(self: *UpChannel, mode_: ChannelMode) void {
         self.flags = (self.flags & ~@as(usize, 3)) | @intFromEnum(mode_);
     }
 
-    pub const WriteError = error{};
+    pub const WriteError = error{BadMode};
     pub const Writer = std.io.GenericWriter(*UpChannel, WriteError, write);
 
     /// Writes up to available space left in buffer for reading by probe, returning number of bytes
     /// written.
-    pub fn write(self: *UpChannel, bytes: []const u8) WriteError!usize {
+    pub fn writeUpTo(self: *UpChannel, bytes: []const u8) WriteError!usize {
         const count = @min(bytes.len, self.contiguousWriteable());
         var write_offset = self.write_offset;
         if (count > 0) {
@@ -101,6 +101,36 @@ pub const UpChannel = extern struct {
         self.write_offset = write_offset;
 
         return count;
+    }
+
+    /// Blocks until all bytes are written to buffer
+    pub fn writeBlocking(self: *UpChannel, bytes: []const u8) WriteError!usize {
+        const count = bytes.len;
+        var written: usize = 0;
+        while (written != count) {
+            written += try self.writeUpTo(bytes[written..]);
+        }
+        return count;
+    }
+
+    /// Behavior depends on up channel's mode, however write always returns
+    /// the length of bytes indicating all bytes were "written"
+    pub fn write(self: *UpChannel, bytes: []const u8) WriteError!usize {
+        switch (self.mode()) {
+            .NoBlockSkip => {
+                if (bytes.len <= self.contiguousWriteable()) {
+                    _ = try self.writeUpTo(bytes);
+                }
+            },
+            .NoBlockTrim => {
+                _ = try self.writeUpTo(bytes);
+            },
+            .BlockIfFull => {
+                _ = try self.writeBlocking(bytes);
+            },
+            _ => return WriteError.BadMode,
+        }
+        return bytes.len;
     }
 
     pub fn writer(self: *UpChannel) Writer {
@@ -215,7 +245,7 @@ pub fn RTT(comptime num_up_channels: usize, comptime num_down_channels: usize) t
         header: Header,
         up_channels: [num_up_channels]UpChannel,
         down_channels: [num_down_channels]DownChannel,
-        buffers: [num_up_channels + num_down_channels][256]u8, // TODO: Configurable/seperated buffer sizes
+        buffers: [num_up_channels + num_down_channels][512]u8, // TODO: Configurable/seperated buffer sizes
 
         /// TODO: Can't currently put * volatile on @This() due to slice type errors, but it appears neccessary because:
         /// - This is trying to avoid the "SEGGER RTT\0..." string from being reordered and written before offsets are valid
