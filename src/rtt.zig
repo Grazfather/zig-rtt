@@ -85,22 +85,45 @@ pub const UpChannel = extern struct {
 
     /// Writes up to available space left in buffer for reading by probe, returning number of bytes
     /// written.
-    pub fn writeUpTo(self: *UpChannel, bytes: []const u8) WriteError!usize {
-        const count = @min(bytes.len, self.contiguousWriteable());
+    pub fn writeAvailable(self: *UpChannel, bytes: []const u8) WriteError!usize {
+
+        // The probe can change self.read_offset via memory modification at any time,
+        // so must perform a volatile read on this value.
+        const read_offset = @as(*volatile usize, @ptrCast(&self.read_offset)).*;
         var write_offset = self.write_offset;
-        if (count > 0) {
-            std.mem.copyForwards(u8, self.buffer[write_offset .. write_offset + count], bytes[0..count]);
+        var bytes_written: usize = 0;
+        // Write from current write position to wrap-around of buffer first
+        if (write_offset >= read_offset) {
+            const count = @min(self.size - write_offset, bytes.len);
+            std.mem.copyForwards(
+                u8,
+                self.buffer[write_offset .. write_offset + count],
+                bytes[0..count],
+            );
+            bytes_written += count;
             write_offset += count;
-        } else {
-            if (write_offset >= self.size)
-                write_offset = 0;
+
+            // Handle wrap-around
+            if (write_offset >= self.size) write_offset = 0;
         }
 
-        // TODO: Memory barrier (DMB)
-        // Force any data writes to complete before updating write offset in case of memory access reorder
-        self.write_offset = write_offset;
+        // We've now either wrapped around or were wrapped around to begin with
+        if (write_offset < read_offset) {
+            const remaining_bytes = @min(read_offset - write_offset - 1, bytes[bytes_written..].len);
+            // Read remaining items of buffer
+            if (remaining_bytes > 0) {
+                std.mem.copyForwards(
+                    u8,
+                    self.buffer[write_offset .. write_offset + remaining_bytes],
+                    bytes[bytes_written .. bytes_written + remaining_bytes],
+                );
+                bytes_written += remaining_bytes;
+                write_offset += remaining_bytes;
+            }
+        }
 
-        return count;
+        self.write_offset = write_offset;
+        return bytes_written;
     }
 
     /// Blocks until all bytes are written to buffer
@@ -108,22 +131,23 @@ pub const UpChannel = extern struct {
         const count = bytes.len;
         var written: usize = 0;
         while (written != count) {
-            written += try self.writeUpTo(bytes[written..]);
+            written += try self.writeAvailable(bytes[written..]);
         }
         return count;
     }
 
     /// Behavior depends on up channel's mode, however write always returns
-    /// the length of bytes indicating all bytes were "written"
+    /// the length of bytes indicating all bytes were "written" even if they were
+    /// skipped. Dropped data due to a full buffer is not considered an error for RTT logging.
     pub fn write(self: *UpChannel, bytes: []const u8) WriteError!usize {
         switch (self.mode()) {
             .NoBlockSkip => {
-                if (bytes.len <= self.contiguousWriteable()) {
-                    _ = try self.writeUpTo(bytes);
+                if (bytes.len <= self.availableSpace()) {
+                    _ = try self.writeAvailable(bytes);
                 }
             },
             .NoBlockTrim => {
-                _ = try self.writeUpTo(bytes);
+                _ = try self.writeAvailable(bytes);
             },
             .BlockIfFull => {
                 _ = try self.writeBlocking(bytes);
@@ -137,7 +161,8 @@ pub const UpChannel = extern struct {
         return .{ .context = self };
     }
 
-    fn contiguousWriteable(self: *UpChannel) usize {
+    /// Available space in the ring buffer for writing, including wrap-around
+    fn availableSpace(self: *UpChannel) usize {
 
         // The probe can change self.read_offset via memory modification at any time,
         // so must perform a volatile read on this value.
@@ -145,12 +170,11 @@ pub const UpChannel = extern struct {
 
         const write_offset = self.write_offset;
 
-        return if (read_offset > write_offset)
-            read_offset - write_offset - 1
-        else if (read_offset == 0)
-            self.size - write_offset - 1
-        else
-            self.size - write_offset;
+        if (read_offset <= write_offset) {
+            return self.size - 1 - write_offset + read_offset;
+        } else {
+            return read_offset - write_offset - 1;
+        }
     }
 };
 
@@ -224,14 +248,16 @@ pub const DownChannel = extern struct {
             if (self.read_offset >= self.size) self.read_offset = 0;
         }
 
-        const remaining_bytes = @min(write_offset - self.read_offset, bytes[bytes_read..].len);
-        // Read remaining items of buffer
-        if (remaining_bytes > 0) {
-            std.mem.copyForwards(u8, bytes[bytes_read .. bytes_read + remaining_bytes], self.buffer[self.read_offset .. self.read_offset + remaining_bytes]);
-            bytes_read += remaining_bytes;
-            self.read_offset += remaining_bytes;
+        // We've now either wrapped around or were wrapped around to begin with
+        if (write_offset < self.read_offset) {
+            const remaining_bytes = @min(write_offset - self.read_offset, bytes[bytes_read..].len);
+            // Read remaining items of buffer
+            if (remaining_bytes > 0) {
+                std.mem.copyForwards(u8, bytes[bytes_read .. bytes_read + remaining_bytes], self.buffer[self.read_offset .. self.read_offset + remaining_bytes]);
+                bytes_read += remaining_bytes;
+                self.read_offset += remaining_bytes;
+            }
         }
-
         return bytes_read;
     }
 
