@@ -70,14 +70,14 @@ pub fn main() !void {
     rtt_instance.init();
     safe_to_use = true;
 
-    std.log.info("Waiting for line:", .{});
-    const reader = rtt_instance.down_channels[0].reader();
+    // std.log.info("Waiting for line:", .{});
+    // const reader = rtt_instance.down_channels[0].reader();
 
     while (true) {
-        const max_line_len = 10;
-        var line_buffer = try std.BoundedArray(u8, max_line_len).init(0);
-        try getLineBlocking(max_line_len, reader, line_buffer.writer());
-        std.log.info("Got a line: \"{s}\"", .{line_buffer.constSlice()});
+        // const max_line_len = 10;
+        // var line_buffer = try std.BoundedArray(u8, max_line_len).init(0);
+        // try getLineBlocking(max_line_len, reader, line_buffer.writer());
+        // std.log.info("Got a line: \"{s}\"", .{line_buffer.constSlice()});
         std.log.info("...take a blink as a reward", .{});
         blinkLed(&led_gpio);
     }

@@ -32,20 +32,12 @@ pub const Header = extern struct {
     }
 };
 
-/// Represents a single up or down channel for RTT.
+/// Represents a target -> host communication channel.
 ///
 /// Implements a ring buffer of size - 1 bytes, as this implementation
 /// does not fill up the buffer in order to avoid the problem of being unable to
 /// distinguish between full and empty.
-///
-/// In Segger's original code, "up" and "down" channels were seperated into different
-/// struct types due to either write_offset or read_offset needing to be volatile based on
-/// which one could be modified in memory by the probe. Casting the appropriate variable
-/// to a volatile * based on whether we're writing (target -> host) or reading (host -> target)
-/// allows us to use a single type for both.
-///
-/// TODO: I actually think I want to seperate these out.
-pub const Channel = extern struct {
+pub const UpChannel = extern struct {
     /// Name is optional and is not required by the spec. Standard names so far are:
     /// "Terminal", "SysView", "J-Scope_t4i4"
     name: [*]const u8,
@@ -64,7 +56,7 @@ pub const Channel = extern struct {
 
     pub fn init(
         /// "Volatile to make sure that compiler cannot change the order of accesses to the control block" - TODO: Is this appropriate for init?
-        self: *volatile Channel,
+        self: *volatile UpChannel,
         name: [*:0]const u8,
         buffer: []u8,
         mode_: ChannelMode,
@@ -80,20 +72,20 @@ pub const Channel = extern struct {
         self.buffer = buffer.ptr;
     }
 
-    pub fn mode(self: *Channel) ChannelMode {
+    pub fn mode(self: *UpChannel) ChannelMode {
         return std.meta.intToEnum(ChannelMode, self.mode & 3);
     }
 
-    pub fn setMode(self: *Channel, mode_: ChannelMode) void {
+    pub fn setMode(self: *UpChannel, mode_: ChannelMode) void {
         self.flags = (self.flags & ~@as(usize, 3)) | @intFromEnum(mode_);
     }
 
     pub const WriteError = error{};
-    pub const Writer = std.io.GenericWriter(*Channel, WriteError, write);
+    pub const Writer = std.io.GenericWriter(*UpChannel, WriteError, write);
 
     /// Writes up to available space left in buffer for reading by probe, returning number of bytes
     /// written.
-    pub fn write(self: *Channel, bytes: []const u8) WriteError!usize {
+    pub fn write(self: *UpChannel, bytes: []const u8) WriteError!usize {
         const count = @min(bytes.len, self.contiguousWriteable());
         var write_offset = self.write_offset;
         if (count > 0) {
@@ -111,11 +103,11 @@ pub const Channel = extern struct {
         return count;
     }
 
-    pub fn writer(self: *Channel) Writer {
+    pub fn writer(self: *UpChannel) Writer {
         return .{ .context = self };
     }
 
-    fn contiguousWriteable(self: *Channel) usize {
+    fn contiguousWriteable(self: *UpChannel) usize {
 
         // The probe can change self.read_offset via memory modification at any time,
         // so must perform a volatile read on this value.
@@ -128,12 +120,61 @@ pub const Channel = extern struct {
         else
             read_offset - write_offset - 1;
     }
+};
+
+/// Represents a host -> target communication channel.
+///
+/// Implements a ring buffer of size - 1 bytes, as this implementation
+/// does not fill up the buffer in order to avoid the problem of being unable to
+/// distinguish between full and empty.
+pub const DownChannel = extern struct {
+    /// Name is optional and is not required by the spec. Standard names so far are:
+    /// "Terminal", "SysView", "J-Scope_t4i4"
+    name: [*]const u8,
+
+    buffer: [*]u8,
+
+    /// Note from above actual buffer size is size - 1 bytes
+    size: usize,
+
+    write_offset: usize,
+    read_offset: usize,
+
+    /// Contains configuration flags. Flags[31:24] are used for validity check and must be zero.
+    /// Flags[23:2] are reserved for future use. Flags[1:0] = RTT operating mode.
+    flags: usize,
+
+    pub fn init(
+        /// "Volatile to make sure that compiler cannot change the order of accesses to the control block" - TODO: Is this appropriate for init?
+        self: *volatile DownChannel,
+        name: [*:0]const u8,
+        buffer: []u8,
+        mode_: ChannelMode,
+    ) void {
+        self.name = name;
+        self.size = buffer.len;
+        self.flags = 0;
+
+        // TODO: Copying code rather than calling self.setMode() to limit scope of *volatile
+        self.flags = (self.flags & ~@as(usize, 3)) | @intFromEnum(mode_);
+
+        // "Set the buffer pointer last, because it is used to detect if the channel was initialized" - TODO: Is this accurate?
+        self.buffer = buffer.ptr;
+    }
+
+    pub fn mode(self: *DownChannel) ChannelMode {
+        return std.meta.intToEnum(ChannelMode, self.mode & 3);
+    }
+
+    pub fn setMode(self: *DownChannel, mode_: ChannelMode) void {
+        self.flags = (self.flags & ~@as(usize, 3)) | @intFromEnum(mode_);
+    }
 
     pub const ReadError = error{};
-    pub const Reader = std.io.GenericReader(*Channel, ReadError, read);
+    pub const Reader = std.io.GenericReader(*DownChannel, ReadError, read);
 
     /// Reads a number of bytes from probe non-blocking.
-    pub fn read(self: *Channel, bytes: []u8) ReadError!usize {
+    pub fn read(self: *DownChannel, bytes: []u8) ReadError!usize {
 
         // The probe can change self.write_offset via memory modification at any time,
         // so must perform a volatile read on this value.
@@ -162,7 +203,7 @@ pub const Channel = extern struct {
         return bytes_read;
     }
 
-    pub fn reader(self: *Channel) Reader {
+    pub fn reader(self: *DownChannel) Reader {
         return .{ .context = self };
     }
 
@@ -172,12 +213,12 @@ pub const Channel = extern struct {
 pub fn RTT(comptime num_up_channels: usize, comptime num_down_channels: usize) type {
     return extern struct {
         header: Header,
-        up_channels: [num_up_channels]Channel,
-        down_channels: [num_down_channels]Channel,
-        buffers: [num_up_channels + num_down_channels][1024]u8, // TODO: Configurable/seperated buffer sizes
+        up_channels: [num_up_channels]UpChannel,
+        down_channels: [num_down_channels]DownChannel,
+        buffers: [num_up_channels + num_down_channels][256]u8, // TODO: Configurable/seperated buffer sizes
 
-        /// TODO: Can't currently put * volatile on @This() due to slice type errors, but is it neccessary?
-        /// This is trying to avoid the "SEGGER RTT\0..." string from being reordered and written before offsets are valid
+        /// TODO: Can't currently put * volatile on @This() due to slice type errors, but it appears neccessary because:
+        /// - This is trying to avoid the "SEGGER RTT\0..." string from being reordered and written before offsets are valid
         pub fn init(self: *@This()) void {
             comptime var i: usize = 0;
             inline while (i < num_up_channels) : (i += 1) {

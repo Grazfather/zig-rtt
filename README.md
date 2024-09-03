@@ -10,6 +10,7 @@ Functionality not yet supported from original:
 
 # TODO:
 - Implementation
+    - Fix bug once buffer limit is hit
     - make accesses to read/write offsets `volatile`
     - add memory barriers where neccessary
     - add locking where neccessary 
@@ -17,4 +18,11 @@ Functionality not yet supported from original:
 - Testing:
     - Max number of up/down channels supported by RTT
     - Max virtual terminals supported by RTT
-    
+
+# RTT Notes
+
+## Overall Design
+
+Segger has quite good documentation on how RTT works on their wiki [here](https://wiki.segger.com/RTT);
+
+
