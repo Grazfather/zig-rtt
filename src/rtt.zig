@@ -144,11 +144,13 @@ pub const UpChannel = extern struct {
         const read_offset = @as(*volatile usize, @ptrCast(&self.read_offset)).*;
 
         const write_offset = self.write_offset;
-        // TODO: Changed back to original Segger method for additional branch eval
-        return if (read_offset <= write_offset)
-            self.size - 1 - write_offset + read_offset
+
+        return if (read_offset > write_offset)
+            read_offset - write_offset - 1
+        else if (read_offset == 0)
+            self.size - write_offset - 1
         else
-            read_offset - write_offset - 1;
+            self.size - write_offset;
     }
 };
 
@@ -245,7 +247,7 @@ pub fn RTT(comptime num_up_channels: usize, comptime num_down_channels: usize) t
         header: Header,
         up_channels: [num_up_channels]UpChannel,
         down_channels: [num_down_channels]DownChannel,
-        buffers: [num_up_channels + num_down_channels][512]u8, // TODO: Configurable/seperated buffer sizes
+        buffers: [num_up_channels + num_down_channels][128]u8, // TODO: Configurable/seperated buffer sizes
 
         /// TODO: Can't currently put * volatile on @This() due to slice type errors, but it appears neccessary because:
         /// - This is trying to avoid the "SEGGER RTT\0..." string from being reordered and written before offsets are valid

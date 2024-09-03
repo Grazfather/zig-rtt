@@ -86,12 +86,15 @@ pub fn main() !void {
     // std.log.info("Waiting for line:", .{});
     // const reader = rtt_instance.down_channels[0].reader();
 
+    const writer = rtt_instance.up_channels[0].writer();
+
     while (true) {
         // const max_line_len = 10;
         // var line_buffer = try std.BoundedArray(u8, max_line_len).init(0);
         // try getLineBlocking(max_line_len, reader, line_buffer.writer());
         // std.log.info("Got a line: \"{s}\"", .{line_buffer.constSlice()});
         // std.log.info("...take a blink as a reward", .{});
+        _ = try writer.write("Exactly10\n");
         blinkLed(&led_gpio);
     }
 }
