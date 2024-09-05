@@ -10,9 +10,6 @@ Functionality not yet supported from original:
 
 # TODO:
 - Implementation
-    - Fix bug once buffer limit is hit
-    - Implement different modes for up channel (critical, as this could block indefinitely when probe is not connected)
-    - make accesses to read/write offsets `volatile`
     - add memory barriers where neccessary
     - add locking where neccessary 
     - allow linker section placement via build options
@@ -22,8 +19,17 @@ Functionality not yet supported from original:
 
 # RTT Notes
 
-## Overall Design
+## Usage
 
 Segger has quite good documentation on how RTT works on their wiki [here](https://wiki.segger.com/RTT);
+
+
+### Basic
+
+For the purpose of text logging, Segger's tools (RTT Viewer) only use channel 0. The configuration function `TODO()` offers a simple configuration if you just want to log text.
+
+### Advanced
+
+Because of the simplicity of RTT's design (in-memory ring buffers), there is a lot of flexibility in how it can be configured. For this... TODO
 
 

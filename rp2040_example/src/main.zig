@@ -15,26 +15,6 @@ const baud_rate = 115200;
 const uart_tx_pin = gpio.num(8);
 const uart_rx_pin = gpio.num(9);
 
-// pub fn log(
-//     comptime level: std.log.Level,
-//     comptime scope: @TypeOf(.EnumLiteral),
-//     comptime format: []const u8,
-//     args: anytype,
-// ) void {
-//     const level_prefix = comptime "[{}.{:0>6}] " ++ level.asText();
-//     const prefix = comptime level_prefix ++ switch (scope) {
-//         .default => ": ",
-//         else => " (" ++ @tagName(scope) ++ "): ",
-//     };
-
-//     if (safe_to_use) {
-//         const current_time = time.get_time_since_boot();
-//         const seconds = current_time.to_us() / std.time.us_per_s;
-//         const microseconds = current_time.to_us() % std.time.us_per_s;
-//         rtt_instance.up_channels[0].writer().print(prefix ++ format ++ "\r\n", .{ seconds, microseconds } ++ args) catch {};
-//     }
-// }
-
 fn blinkLed(led_gpio: *Pin) void {
     led_gpio.put(0);
     time.sleep_ms(500);
@@ -44,9 +24,6 @@ fn blinkLed(led_gpio: *Pin) void {
 
 const RttType = rtt.RTT(1, 1);
 var rtt_instance: RttType = undefined;
-
-// TODO: less hacky
-var safe_to_use: bool = false;
 
 const Error = error{BufferOverflow};
 fn getLineBlocking(comptime max_line_size: usize, reader: anytype, writer: anytype) !void {
@@ -81,20 +58,18 @@ pub fn main() !void {
     led_gpio.put(1);
 
     rtt_instance.init();
-    safe_to_use = true;
 
-    // std.log.info("Waiting for line:", .{});
-    // const reader = rtt_instance.down_channels[0].reader();
-
+    std.log.info("Waiting for line:", .{});
+    const reader = rtt_instance.down_channels[0].reader();
     const writer = rtt_instance.up_channels[0].writer();
 
     while (true) {
-        // const max_line_len = 10;
-        // var line_buffer = try std.BoundedArray(u8, max_line_len).init(0);
-        // try getLineBlocking(max_line_len, reader, line_buffer.writer());
-        // std.log.info("Got a line: \"{s}\"", .{line_buffer.constSlice()});
-        // std.log.info("...take a blink as a reward", .{});
-        _ = try writer.write("Exactly10\n");
+        const max_line_len = 10;
+        var line_buffer = try std.BoundedArray(u8, max_line_len).init(0);
+        try getLineBlocking(max_line_len, reader, line_buffer.writer());
+        std.log.info("Got a line: \"{s}\"", .{line_buffer.constSlice()});
+        std.log.info("...take an RTT blink as a reward", .{});
+        _ = try writer.write("BLINK\n");
         blinkLed(&led_gpio);
     }
 }
