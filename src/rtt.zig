@@ -299,29 +299,78 @@ pub const DownChannel = extern struct {
 
 pub const ChannelConfig = struct {
     name: [*:0]const u8,
-    // buffer_size: usize, // TODO: Scheme for buffers...
+    buffer_size: usize,
     mode: ChannelMode,
 };
 
-pub fn RTT(comptime up_configs: []const ChannelConfig, comptime down_configs: []const ChannelConfig, comptime buffer_size: usize) type {
+/// Constructs a struct type at comptime where each field is a u8 array of size specified by channel config.
+///
+/// Fields follow the naming convention "up_buffer_N" for up channels, and "down_buffer_N" for down channels.
+fn BuildBufferStorageType(comptime up_configs: []const ChannelConfig, comptime down_configs: []const ChannelConfig) type {
+    const fields: []const std.builtin.Type.StructField = comptime v: {
+        var fields_temp: [up_configs.len + down_configs.len]std.builtin.Type.StructField = undefined;
+        for (up_configs, 0..) |up_cfg, idx| {
+            const buffer_type = [up_cfg.buffer_size]u8;
+            fields_temp[idx] = .{
+                .name = std.fmt.comptimePrint("up_buffer_{d}", .{idx}),
+                .type = buffer_type,
+                .is_comptime = false,
+                .alignment = @alignOf(buffer_type),
+                .default_value = null,
+            };
+        }
+        for (down_configs, 0..) |down_cfg, idx| {
+            const buffer_type = [down_cfg.buffer_size]u8;
+            fields_temp[up_configs.len + idx] = .{
+                .name = std.fmt.comptimePrint("down_buffer_{d}", .{idx}),
+                .type = buffer_type,
+                .is_comptime = false,
+                .alignment = @alignOf(buffer_type),
+                .default_value = null,
+            };
+        }
+        break :v &fields_temp;
+    };
+
+    return @Type(.{
+        .Struct = .{
+            .layout = .@"extern",
+            .fields = fields,
+            .decls = &[_]std.builtin.Type.Declaration{},
+            .is_tuple = false,
+        },
+    });
+}
+
+pub fn RTT(comptime up_configs: []const ChannelConfig, comptime down_configs: []const ChannelConfig) type {
     if (up_configs.len == 0 or down_configs.len == 0) {
         @compileError("Must have at least 1 up and down channel configured");
     }
 
+    const BufferContainerType = BuildBufferStorageType(up_configs, down_configs);
     return extern struct {
         header: Header,
         up_channels: [up_configs.len]UpChannel,
         down_channels: [down_configs.len]DownChannel,
-        buffers: [up_configs.len + down_configs.len][buffer_size]u8, // TODO: Configurable buffer size per channel config
+        buffers: BufferContainerType,
 
         pub fn init(self: *@This()) void {
             comptime var i: usize = 0;
+
             inline while (i < up_configs.len) : (i += 1) {
-                self.up_channels[i].init(up_configs[i].name, &self.buffers[i], up_configs[i].mode);
+                self.up_channels[i].init(
+                    up_configs[i].name,
+                    &@field(self.buffers, std.fmt.comptimePrint("up_buffer_{d}", .{i})),
+                    up_configs[i].mode,
+                );
             }
             i = 0;
             inline while (i < down_configs.len) : (i += 1) {
-                self.down_channels[i].init(down_configs[i].name, &self.buffers[up_configs.len + i], down_configs[i].mode);
+                self.down_channels[i].init(
+                    down_configs[i].name,
+                    &@field(self.buffers, std.fmt.comptimePrint("down_buffer_{d}", .{i})),
+                    down_configs[i].mode,
+                );
             }
             self.header.init(up_configs.len, down_configs.len);
         }
