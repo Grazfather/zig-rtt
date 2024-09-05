@@ -297,25 +297,33 @@ pub const DownChannel = extern struct {
     }
 };
 
-pub fn RTT(comptime num_up_channels: usize, comptime num_down_channels: usize) type {
+pub const ChannelConfig = struct {
+    name: [*:0]const u8,
+    // buffer_size: usize, // TODO: Scheme for buffers...
+    mode: ChannelMode,
+};
+
+pub fn RTT(comptime up_configs: []const ChannelConfig, comptime down_configs: []const ChannelConfig, comptime buffer_size: usize) type {
+    if (up_configs.len == 0 or down_configs.len == 0) {
+        @compileError("Must have at least 1 up and down channel configured");
+    }
+
     return extern struct {
         header: Header,
-        up_channels: [num_up_channels]UpChannel,
-        down_channels: [num_down_channels]DownChannel,
-        buffers: [num_up_channels + num_down_channels][128]u8, // TODO: Configurable/seperated buffer sizes
+        up_channels: [up_configs.len]UpChannel,
+        down_channels: [down_configs.len]DownChannel,
+        buffers: [up_configs.len + down_configs.len][buffer_size]u8, // TODO: Configurable buffer size per channel config
 
-        /// TODO: Can't currently put * volatile on @This() due to slice type errors, but it appears neccessary because:
-        /// - This is trying to avoid the "SEGGER RTT\0..." string from being reordered and written before offsets are valid
         pub fn init(self: *@This()) void {
             comptime var i: usize = 0;
-            inline while (i < num_up_channels) : (i += 1) {
-                self.up_channels[i].init("Terminal", &self.buffers[i], .NoBlockSkip); // TODO: Configurable names/modes
+            inline while (i < up_configs.len) : (i += 1) {
+                self.up_channels[i].init(up_configs[i].name, &self.buffers[i], up_configs[i].mode);
             }
             i = 0;
-            inline while (i < num_down_channels) : (i += 1) {
-                self.down_channels[i].init("Terminal", &self.buffers[num_up_channels + i], .BlockIfFull); // TODO: Configurable names/modes
+            inline while (i < down_configs.len) : (i += 1) {
+                self.down_channels[i].init(down_configs[i].name, &self.buffers[up_configs.len + i], down_configs[i].mode);
             }
-            self.header.init(num_up_channels, num_down_channels);
+            self.header.init(up_configs.len, down_configs.len);
         }
     };
 }
