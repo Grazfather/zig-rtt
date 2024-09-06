@@ -7,16 +7,6 @@ pub const ChannelMode = enum(usize) {
     _,
 };
 
-/// TODO: This will work for Cortex-M devices, but need comptime target option checking to
-/// dynamically change this for different targets. Some targets don't need this at all as
-/// they don't have a CPU that can re-arrange memory accesses.
-///
-/// Could also be replaced potentially with the built-in @fence(), however it isn't documented
-/// enough for me to trust it, I'm not sure what the inputs to that builtin actually do...
-inline fn memory_barrier() void {
-    asm volatile ("dmb");
-}
-
 /// Header that indicates to the connected probe how many up/down channels are in use.
 ///
 /// The RTT header is found based on the string "SEGGER RTT", so we need to avoid storing
@@ -37,11 +27,11 @@ pub const Header = extern struct {
         // Ensure no memory reordering can occur and all accesses are finished before
         // marking block "valid" and writing header string. This prevents the JLINK
         // from finding a "valid" block while offets/pointers aren't yet valid.
-        memory_barrier();
+        @fence(std.builtin.AtomicOrder.seq_cst);
         for (0..init_str.len) |i| {
             self.id[i] = init_str[init_str.len - i - 1];
         }
-        memory_barrier();
+        @fence(std.builtin.AtomicOrder.seq_cst);
     }
 };
 
@@ -78,7 +68,7 @@ pub const UpChannel = extern struct {
         self.setMode(mode_);
 
         // Ensure buffer pointer is set last and can't be reordered
-        memory_barrier();
+        @fence(std.builtin.AtomicOrder.seq_cst);
         self.buffer = buffer.ptr;
     }
 
@@ -134,7 +124,7 @@ pub const UpChannel = extern struct {
 
         // Force data write to be complete before writing the <WrOff>, in case CPU
         // is allowed to change the order of memory accesses
-        memory_barrier();
+        @fence(std.builtin.AtomicOrder.seq_cst);
         self.write_offset = write_offset;
         return bytes_written;
     }
@@ -222,7 +212,7 @@ pub const DownChannel = extern struct {
         self.setMode(mode_);
 
         // Ensure buffer pointer is set last and can't be reordered
-        memory_barrier();
+        @fence(std.builtin.AtomicOrder.seq_cst);
         self.buffer = buffer.ptr;
     }
 
@@ -273,7 +263,7 @@ pub const DownChannel = extern struct {
 
         // Force data write to be complete before writing the read_offset, in case CPU
         // is allowed to change the order of memory accesses
-        memory_barrier();
+        @fence(std.builtin.AtomicOrder.seq_cst);
         self.read_offset = read_offset;
 
         return bytes_read;
