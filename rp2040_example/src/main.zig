@@ -22,7 +22,7 @@ fn blinkLed(led_gpio: *Pin) void {
     time.sleep_ms(500);
 }
 
-const RttType = rtt.RTT(
+const rtt_instance = rtt.RTT(
     &.{
         .{ .name = "Terminal", .mode = .NoBlockSkip, .buffer_size = 128 },
         .{ .name = "Up2", .mode = .NoBlockSkip, .buffer_size = 256 },
@@ -31,8 +31,8 @@ const RttType = rtt.RTT(
         .{ .name = "Terminal", .mode = .BlockIfFull, .buffer_size = 512 },
         .{ .name = "Down2", .mode = .BlockIfFull, .buffer_size = 1024 },
     },
+    null,
 );
-var rtt_instance: RttType = undefined;
 
 const Error = error{BufferOverflow};
 fn getLineBlocking(comptime max_line_size: usize, reader: anytype, writer: anytype) !void {
@@ -69,8 +69,8 @@ pub fn main() !void {
     rtt_instance.init();
 
     std.log.info("Waiting for line:", .{});
-    const reader = rtt_instance.down_channels[0].reader();
-    const writer = rtt_instance.up_channels[0].writer();
+    const reader = rtt_instance.reader(0);
+    const writer = rtt_instance.writer(0);
 
     while (true) {
         const max_line_len = 1024;
