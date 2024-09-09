@@ -1,4 +1,6 @@
 const std = @import("std");
+const lock = @import("lock.zig");
+pub const Lock = lock.Lock;
 
 /// Header that indicates to the connected probe how many up/down channels are in use.
 ///
@@ -36,6 +38,7 @@ pub const channel = struct {
         _,
     };
 
+    /// Configuration for an up or down channel per the RTT spec
     pub const Config = struct {
         name: [*:0]const u8,
         buffer_size: usize,
@@ -47,7 +50,7 @@ pub const channel = struct {
     /// Implements a ring buffer of size - 1 bytes, as this implementation
     /// does not fill up the buffer in order to avoid the problem of being unable to
     /// distinguish between full and empty.
-    fn Up(comptime thread_safety_: ThreadSafety) type {
+    fn Up(comptime exclusive_access_: Lock) type {
         return extern struct {
             /// Name is optional and is not required by the spec. Standard names so far are:
             /// "Terminal", "SysView", "J-Scope_t4i4"
@@ -65,7 +68,8 @@ pub const channel = struct {
             /// Flags[23:2] are reserved for future use. Flags[1:0] = RTT operating mode.
             flags: usize,
 
-            const thread_safety = thread_safety_;
+            const exclusive_access = exclusive_access_;
+
             const Self = @This();
 
             fn init(
@@ -154,7 +158,7 @@ pub const channel = struct {
             /// the length of bytes indicating all bytes were "written" even if they were
             /// skipped. Dropped data due to a full buffer is not considered an error.
             fn write(self: *Self, bytes: []const u8) WriteError!usize {
-                thread_safety.lock_fn();
+                exclusive_access.lockFn(exclusive_access.context);
                 switch (self.mode()) {
                     .NoBlockSkip => {
                         if (bytes.len <= self.availableSpace()) {
@@ -169,7 +173,7 @@ pub const channel = struct {
                     },
                     _ => unreachable,
                 }
-                thread_safety.unlock_fn();
+                exclusive_access.unlockFn(exclusive_access.context);
                 return bytes.len;
             }
 
@@ -198,7 +202,7 @@ pub const channel = struct {
     /// Implements a ring buffer of size - 1 bytes, as this implementation
     /// does not fill up the buffer in order to avoid the problem of being unable to
     /// distinguish between full and empty.
-    fn Down(comptime thread_safety_: ThreadSafety) type {
+    fn Down(comptime exclusive_access_: Lock) type {
         return extern struct {
             /// Name is optional and is not required by the spec. Standard names so far are:
             /// "Terminal", "SysView", "J-Scope_t4i4"
@@ -217,7 +221,7 @@ pub const channel = struct {
             flags: usize,
 
             const Self = @This();
-            const thread_safety = thread_safety_;
+            const exclusive_access = exclusive_access_;
 
             pub fn init(
                 self: *Self,
@@ -250,7 +254,7 @@ pub const channel = struct {
             ///
             /// TODO: Does the channel's mode actually matter here?
             pub fn readAvailable(self: *Self, bytes: []u8) ReadError!usize {
-                thread_safety.lock_fn();
+                exclusive_access.lockFn(exclusive_access.context);
 
                 // The probe can change self.write_offset via memory modification at any time,
                 // so must perform a volatile read on this value.
@@ -285,7 +289,7 @@ pub const channel = struct {
                 @fence(std.builtin.AtomicOrder.seq_cst);
                 self.read_offset = read_offset;
 
-                thread_safety.unlock_fn();
+                exclusive_access.unlockFn(exclusive_access.context);
 
                 return bytes_read;
             }
@@ -309,6 +313,7 @@ pub const channel = struct {
         };
     }
 };
+
 /// Constructs a struct type where each field is a u8 array of size specified by channel config.
 ///
 /// Fields follow the naming convention "up_buffer_N" for up channels, and "down_buffer_N" for down channels.
@@ -350,7 +355,7 @@ fn BuildBufferStorageType(comptime up_channels: []const channel.Config, comptime
 
 /// Creates a control block struct for the given channel configs. Buffer storage is also contained within this struct, although
 /// per the RTT spec it doesn't have to be.
-fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_channels: []const channel.Config, comptime thread_safety: ThreadSafety) type {
+fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_channels: []const channel.Config, comptime exclusive_access: Lock) type {
     if (up_channels.len == 0 or down_channels.len == 0) {
         @compileError("Must have at least 1 up and down channel configured");
     }
@@ -358,8 +363,8 @@ fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_chan
     const BufferContainerType = BuildBufferStorageType(up_channels, down_channels);
     return extern struct {
         header: Header,
-        up_channels: [up_channels.len]channel.Up(thread_safety),
-        down_channels: [down_channels.len]channel.Down(thread_safety),
+        up_channels: [up_channels.len]channel.Up(exclusive_access),
+        down_channels: [down_channels.len]channel.Down(exclusive_access),
         buffers: BufferContainerType,
 
         pub fn init(self: *@This()) void {
@@ -387,32 +392,26 @@ fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_chan
     };
 }
 
-pub const ThreadSafety = struct {
-    lock_fn: fn () void,
-    unlock_fn: fn () void,
-};
-
-fn defaultLock() void {}
-fn defaultUnlock() void {}
-
-fn emptyLock() void {}
-fn emptyUnlock() void {}
-
+/// Compile time configuration of RTT
 pub const Config = struct {
     up_channels: []const channel.Config = &[_]channel.Config{.{ .name = "Terminal", .buffer_size = 256, .mode = .NoBlockSkip }},
     down_channels: []const channel.Config = &[_]channel.Config{.{ .name = "Terminal", .buffer_size = 256, .mode = .BlockIfFull }},
-    thread_safety: ?ThreadSafety = .{ .lock_fn = defaultLock, .unlock_fn = defaultUnlock },
+    /// Optionally supply a custom implementation of exclusive access protection (lock/unlock),
+    /// defaults to original Segger lock implementation when not provided, disables lock protection when
+    /// provided with null
+    exclusive_access: ?Lock = lock.default.get(),
+    /// Optionall place the RTT control block (and buffers) in a specific linker section
     linker_section: ?[]const u8 = null,
 };
 
 /// Creates an RTT namespace given the compile time configuration with functions for writing/reading from RTT channels.
 pub fn RTT(comptime config: Config) type {
     return struct {
-        const thread_safety = config.thread_safety orelse .{ .lock_fn = emptyLock, .unlock_fn = emptyUnlock };
+        const exclusive_access = config.exclusive_access orelse lock.empty.get();
         var control_block: ControlBlock(
             config.up_channels,
             config.down_channels,
-            thread_safety,
+            exclusive_access,
         ) = undefined; // TODO: Place at specific linker section
 
         comptime {
@@ -427,9 +426,10 @@ pub fn RTT(comptime config: Config) type {
             control_block.init();
         }
 
-        pub const WriteError = channel.Up(thread_safety).WriteError;
-        pub const Writer = channel.Up(thread_safety).Writer;
+        pub const WriteError = channel.Up(exclusive_access).WriteError;
+        pub const Writer = channel.Up(exclusive_access).Writer;
 
+        /// Write bytes to a given up channel
         pub fn write(comptime channel_number: usize, bytes: []const u8) WriteError!usize {
             comptime {
                 if (channel_number >= config.up_channels.len) @compileError(std.fmt.comptimePrint("Channel number {d} exceeds max up channel number of {d}", .{ channel_number, config.up_channels.len - 1 }));
@@ -444,9 +444,10 @@ pub fn RTT(comptime config: Config) type {
             return control_block.up_channels[channel_number].writer();
         }
 
-        pub const ReadError = channel.Down(thread_safety).ReadError;
-        pub const Reader = channel.Down(thread_safety).Reader;
+        pub const ReadError = channel.Down(exclusive_access).ReadError;
+        pub const Reader = channel.Down(exclusive_access).Reader;
 
+        /// Read bytes from a given down channel
         pub fn read(comptime channel_number: usize, bytes: []u8) ReadError!usize {
             comptime {
                 if (channel_number >= config.down_channels.len) @compileError(std.fmt.comptimePrint("Channel number {d} exceeds max down channel number of {d}", .{ channel_number, config.down_channels.len - 1 }));

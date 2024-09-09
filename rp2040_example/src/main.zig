@@ -22,6 +22,26 @@ fn blinkLed(led_gpio: *Pin) void {
     time.sleep_ms(500);
 }
 
+var pretend_locked: bool = false;
+
+fn pretendLock(context: *anyopaque) void {
+    const ctx: *bool = @alignCast(@ptrCast(context));
+    ctx.* = true;
+}
+
+fn pretendUnlock(context: *anyopaque) void {
+    const ctx: *bool = @alignCast(@ptrCast(context));
+    ctx.* = false;
+}
+
+const pretend_lock: rtt.Lock = .{
+    .context = &pretend_locked,
+    .lockFn = pretendLock,
+    .unlockFn = pretendUnlock,
+};
+
+// Configure RTT with specific sizes/names for up and down channels (2 of each) as
+// well as a custom locking routine and specific linker placement.
 const rtt_instance = rtt.RTT(.{
     .up_channels = &.{
         .{ .name = "Terminal", .mode = .NoBlockSkip, .buffer_size = 128 },
@@ -31,9 +51,11 @@ const rtt_instance = rtt.RTT(.{
         .{ .name = "Terminal", .mode = .BlockIfFull, .buffer_size = 512 },
         .{ .name = "Down2", .mode = .BlockIfFull, .buffer_size = 1024 },
     },
+    .exclusive_access = pretend_lock,
     .linker_section = ".rtt_cb",
 });
 
+// Configure RTT with all default settings:
 // const rtt_instance = rtt.RTT(.{});
 
 const Error = error{BufferOverflow};
@@ -70,7 +92,6 @@ pub fn main() !void {
 
     rtt_instance.init();
 
-    std.log.info("Waiting for line:", .{});
     const reader = rtt_instance.reader(0);
     const writer = rtt_instance.writer(0);
 
