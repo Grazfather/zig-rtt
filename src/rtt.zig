@@ -6,7 +6,7 @@ const std = @import("std");
 /// the whole string in memory anywhere other than this header (otherwise host software
 /// may choose the wrong location). Storing it reversed in the variable "init_str" and then
 /// copying it over accomplishes this.
-pub const Header = extern struct {
+const Header = extern struct {
     id: [16]u8,
     max_up_channels: usize,
     max_down_channels: usize,
@@ -47,7 +47,7 @@ pub const channel = struct {
     /// Implements a ring buffer of size - 1 bytes, as this implementation
     /// does not fill up the buffer in order to avoid the problem of being unable to
     /// distinguish between full and empty.
-    pub const Up = extern struct {
+    const Up = extern struct {
         /// Name is optional and is not required by the spec. Standard names so far are:
         /// "Terminal", "SysView", "J-Scope_t4i4"
         name: [*]const u8,
@@ -64,7 +64,7 @@ pub const channel = struct {
         /// Flags[23:2] are reserved for future use. Flags[1:0] = RTT operating mode.
         flags: usize,
 
-        pub fn init(
+        fn init(
             self: *Up,
             name: [*:0]const u8,
             buffer: []u8,
@@ -79,20 +79,20 @@ pub const channel = struct {
             self.buffer = buffer.ptr;
         }
 
-        pub fn mode(self: *Up) Mode {
+        fn mode(self: *Up) Mode {
             return std.meta.intToEnum(Mode, self.flags & 3) catch unreachable;
         }
 
-        pub fn setMode(self: *Up, mode_: Mode) void {
+        fn setMode(self: *Up, mode_: Mode) void {
             self.flags = (self.flags & ~@as(usize, 3)) | @intFromEnum(mode_);
         }
 
-        pub const WriteError = error{};
-        pub const Writer = std.io.GenericWriter(*Up, WriteError, write);
+        const WriteError = error{};
+        const Writer = std.io.GenericWriter(*Up, WriteError, write);
 
         /// Writes up to available space left in buffer for reading by probe, returning number of bytes
         /// written.
-        pub fn writeAvailable(self: *Up, bytes: []const u8) WriteError!usize {
+        fn writeAvailable(self: *Up, bytes: []const u8) WriteError!usize {
 
             // The probe can change self.read_offset via memory modification at any time,
             // so must perform a volatile read on this value.
@@ -137,7 +137,7 @@ pub const channel = struct {
         }
 
         /// Blocks until all bytes are written to buffer
-        pub fn writeBlocking(self: *Up, bytes: []const u8) WriteError!usize {
+        fn writeBlocking(self: *Up, bytes: []const u8) WriteError!usize {
             const count = bytes.len;
             var written: usize = 0;
             while (written != count) {
@@ -149,7 +149,7 @@ pub const channel = struct {
         /// Behavior depends on up channel's mode, however write always returns
         /// the length of bytes indicating all bytes were "written" even if they were
         /// skipped. Dropped data due to a full buffer is not considered an error.
-        pub fn write(self: *Up, bytes: []const u8) WriteError!usize {
+        fn write(self: *Up, bytes: []const u8) WriteError!usize {
             switch (self.mode()) {
                 .NoBlockSkip => {
                     if (bytes.len <= self.availableSpace()) {
@@ -167,7 +167,7 @@ pub const channel = struct {
             return bytes.len;
         }
 
-        pub fn writer(self: *Up) Writer {
+        fn writer(self: *Up) Writer {
             return .{ .context = self };
         }
 
@@ -191,7 +191,7 @@ pub const channel = struct {
     /// Implements a ring buffer of size - 1 bytes, as this implementation
     /// does not fill up the buffer in order to avoid the problem of being unable to
     /// distinguish between full and empty.
-    pub const Down = extern struct {
+    const Down = extern struct {
         /// Name is optional and is not required by the spec. Standard names so far are:
         /// "Terminal", "SysView", "J-Scope_t4i4"
         name: [*]const u8,
@@ -334,7 +334,7 @@ fn BuildBufferStorageType(comptime up_channels: []const channel.Config, comptime
 }
 
 /// Creates a control block struct for the given channel configs.
-pub fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_channels: []const channel.Config) type {
+fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_channels: []const channel.Config) type {
     if (up_channels.len == 0 or down_channels.len == 0) {
         @compileError("Must have at least 1 up and down channel configured");
     }
@@ -377,7 +377,7 @@ pub const Config = struct {
     linker_section: ?[]const u8 = null,
 };
 
-/// Creates an instance of RTT for communication with debug probe.
+/// Creates an RTT namespace given the compile time configuration with functions for writing/reading from RTT channels.
 pub fn RTT(comptime config: Config) type {
     return struct {
         pub var control_block_: ControlBlock(config.up_channels, config.down_channels) = undefined; // TODO: Place at specific linker section
