@@ -22,17 +22,19 @@ fn blinkLed(led_gpio: *Pin) void {
     time.sleep_ms(500);
 }
 
-const rtt_instance = rtt.RTT(
-    &.{
+const rtt_instance = rtt.RTT(.{
+    .up_channels = &.{
         .{ .name = "Terminal", .mode = .NoBlockSkip, .buffer_size = 128 },
         .{ .name = "Up2", .mode = .NoBlockSkip, .buffer_size = 256 },
     },
-    &.{
+    .down_channels = &.{
         .{ .name = "Terminal", .mode = .BlockIfFull, .buffer_size = 512 },
         .{ .name = "Down2", .mode = .BlockIfFull, .buffer_size = 1024 },
     },
-    null,
-);
+    .linker_section = ".rtt_cb",
+});
+
+// const rtt_instance = rtt.RTT(.{});
 
 const Error = error{BufferOverflow};
 fn getLineBlocking(comptime max_line_size: usize, reader: anytype, writer: anytype) !void {

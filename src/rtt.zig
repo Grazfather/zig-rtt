@@ -297,10 +297,10 @@ pub const channel = struct {
 /// Constructs a struct type where each field is a u8 array of size specified by channel config.
 ///
 /// Fields follow the naming convention "up_buffer_N" for up channels, and "down_buffer_N" for down channels.
-fn BuildBufferStorageType(comptime up_configs: []const channel.Config, comptime down_configs: []const channel.Config) type {
+fn BuildBufferStorageType(comptime up_channels: []const channel.Config, comptime down_channels: []const channel.Config) type {
     const fields: []const std.builtin.Type.StructField = comptime v: {
-        var fields_temp: [up_configs.len + down_configs.len]std.builtin.Type.StructField = undefined;
-        for (up_configs, 0..) |up_cfg, idx| {
+        var fields_temp: [up_channels.len + down_channels.len]std.builtin.Type.StructField = undefined;
+        for (up_channels, 0..) |up_cfg, idx| {
             const buffer_type = [up_cfg.buffer_size]u8;
             fields_temp[idx] = .{
                 .name = std.fmt.comptimePrint("up_buffer_{d}", .{idx}),
@@ -310,9 +310,9 @@ fn BuildBufferStorageType(comptime up_configs: []const channel.Config, comptime 
                 .default_value = null,
             };
         }
-        for (down_configs, 0..) |down_cfg, idx| {
+        for (down_channels, 0..) |down_cfg, idx| {
             const buffer_type = [down_cfg.buffer_size]u8;
-            fields_temp[up_configs.len + idx] = .{
+            fields_temp[up_channels.len + idx] = .{
                 .name = std.fmt.comptimePrint("down_buffer_{d}", .{idx}),
                 .type = buffer_type,
                 .is_comptime = false,
@@ -334,50 +334,56 @@ fn BuildBufferStorageType(comptime up_configs: []const channel.Config, comptime 
 }
 
 /// Creates a control block struct for the given channel configs.
-pub fn ControlBlock(comptime up_configs: []const channel.Config, comptime down_configs: []const channel.Config) type {
-    if (up_configs.len == 0 or down_configs.len == 0) {
+pub fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_channels: []const channel.Config) type {
+    if (up_channels.len == 0 or down_channels.len == 0) {
         @compileError("Must have at least 1 up and down channel configured");
     }
 
-    const BufferContainerType = BuildBufferStorageType(up_configs, down_configs);
+    const BufferContainerType = BuildBufferStorageType(up_channels, down_channels);
     return extern struct {
         header: Header,
-        up_channels: [up_configs.len]channel.Up,
-        down_channels: [down_configs.len]channel.Down,
+        up_channels: [up_channels.len]channel.Up,
+        down_channels: [down_channels.len]channel.Down,
         buffers: BufferContainerType,
 
         pub fn init(self: *@This()) void {
             comptime var i: usize = 0;
 
-            inline while (i < up_configs.len) : (i += 1) {
+            inline while (i < up_channels.len) : (i += 1) {
                 self.up_channels[i].init(
-                    up_configs[i].name,
+                    up_channels[i].name,
                     &@field(self.buffers, std.fmt.comptimePrint("up_buffer_{d}", .{i})),
-                    up_configs[i].mode,
+                    up_channels[i].mode,
                 );
             }
             i = 0;
-            inline while (i < down_configs.len) : (i += 1) {
+            inline while (i < down_channels.len) : (i += 1) {
                 self.down_channels[i].init(
-                    down_configs[i].name,
+                    down_channels[i].name,
                     &@field(self.buffers, std.fmt.comptimePrint("down_buffer_{d}", .{i})),
-                    down_configs[i].mode,
+                    down_channels[i].mode,
                 );
             }
             // Prevent compiler from re-ordering header init function as it must come last
             @fence(std.builtin.AtomicOrder.seq_cst);
-            self.header.init(up_configs.len, down_configs.len);
+            self.header.init(up_channels.len, down_channels.len);
         }
     };
 }
 
+pub const Config = struct {
+    up_channels: []const channel.Config = &[_]channel.Config{.{ .name = "Terminal", .buffer_size = 256, .mode = .NoBlockSkip }},
+    down_channels: []const channel.Config = &[_]channel.Config{.{ .name = "Terminal", .buffer_size = 256, .mode = .BlockIfFull }},
+    linker_section: ?[]const u8 = null,
+};
+
 /// Creates an instance of RTT for communication with debug probe.
-pub fn RTT(comptime up_configs: []const channel.Config, comptime down_configs: []const channel.Config, comptime linker_section: ?[]const u8) type {
+pub fn RTT(comptime config: Config) type {
     return struct {
-        pub var control_block_: ControlBlock(up_configs, down_configs) = undefined; // TODO: Place at specific linker section
+        pub var control_block_: ControlBlock(config.up_channels, config.down_channels) = undefined; // TODO: Place at specific linker section
 
         comptime {
-            if (linker_section) |section| @export(control_block_, .{
+            if (config.linker_section) |section| @export(control_block_, .{
                 .name = "RttControlBlock",
                 .section = section,
             });
@@ -393,14 +399,14 @@ pub fn RTT(comptime up_configs: []const channel.Config, comptime down_configs: [
 
         pub fn write(comptime channel_number: usize, bytes: []const u8) WriteError!usize {
             comptime {
-                if (channel_number >= up_configs.len) @compileError(std.fmt.comptimePrint("Channel number {d} exceeds max up channel number of {d}", .{ channel_number, up_configs.len - 1 }));
+                if (channel_number >= config.up_channels.len) @compileError(std.fmt.comptimePrint("Channel number {d} exceeds max up channel number of {d}", .{ channel_number, config.up_channels.len - 1 }));
             }
             return control_block_.up_channels[channel_number].write(bytes);
         }
 
         pub fn writer(comptime channel_number: usize) Writer {
             comptime {
-                if (channel_number >= up_configs.len) @compileError(std.fmt.comptimePrint("Channel number {d} exceeds max up channel number of {d}", .{ channel_number, up_configs.len - 1 }));
+                if (channel_number >= config.up_channels.len) @compileError(std.fmt.comptimePrint("Channel number {d} exceeds max up channel number of {d}", .{ channel_number, config.up_channels.len - 1 }));
             }
             return control_block_.up_channels[channel_number].writer();
         }
@@ -410,14 +416,14 @@ pub fn RTT(comptime up_configs: []const channel.Config, comptime down_configs: [
 
         pub fn read(comptime channel_number: usize, bytes: []u8) ReadError!usize {
             comptime {
-                if (channel_number >= down_configs.len) @compileError(std.fmt.comptimePrint("Channel number {d} exceeds max down channel number of {d}", .{ channel_number, down_configs.len - 1 }));
+                if (channel_number >= config.down_channels.len) @compileError(std.fmt.comptimePrint("Channel number {d} exceeds max down channel number of {d}", .{ channel_number, config.down_channels.len - 1 }));
             }
             return control_block_.down_channels[channel_number].readAvailable(bytes);
         }
 
         pub fn reader(comptime channel_number: usize) Reader {
             comptime {
-                if (channel_number >= down_configs.len) @compileError(std.fmt.comptimePrint("Channel number {d} exceeds max down channel number of {d}", .{ channel_number, down_configs.len - 1 }));
+                if (channel_number >= config.down_channels.len) @compileError(std.fmt.comptimePrint("Channel number {d} exceeds max down channel number of {d}", .{ channel_number, config.down_channels.len - 1 }));
             }
             return control_block_.down_channels[channel_number].reader();
         }
