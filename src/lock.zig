@@ -1,14 +1,48 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// A struct that provides exclusive access to RTT functions.
-pub const Lock = struct {
+/// A generic struct that provides exclusive access to the RTT control block
+pub fn GenericLock(
+    comptime Context: type,
+    comptime lockFn: fn (context: Context) void,
+    comptime unlockFn: fn (context: Context) void,
+) type {
+    return struct {
+        const Self = @This();
+        context: Context,
+
+        pub inline fn lock(self: Self) void {
+            return lockFn(self.context);
+        }
+
+        fn typeErasedLock(context: *anyopaque) void {
+            const ptr: *const Context = @alignCast(@ptrCast(context));
+            return lockFn(ptr.*);
+        }
+
+        pub inline fn unlock(self: Self) void {
+            return unlockFn(self.context);
+        }
+
+        fn typeErasedUnlock(context: *anyopaque) void {
+            const ptr: *const Context = @alignCast(@ptrCast(context));
+            return unlockFn(ptr.*);
+        }
+
+        pub inline fn any(self: *Self) AnyLock {
+            return .{
+                .context = @ptrCast(&self.context),
+                .lockFn = typeErasedLock,
+                .unlockFn = typeErasedUnlock,
+            };
+        }
+    };
+}
+
+/// A type erased version of GenericLock that serves as a concrete type to pass into Config
+pub const AnyLock = struct {
     context: *anyopaque,
-
-    /// Called before any write/read operations
     lockFn: fn (context: *anyopaque) void,
-
-    /// Called after any write/read operations
     unlockFn: fn (context: *anyopaque) void,
 };
 
@@ -16,13 +50,11 @@ pub const Lock = struct {
 ///
 /// The default lock behavior when none is provided explicitly.
 pub const default = struct {
-    var ctx: Context = undefined;
-
     const Context = struct { isr_reg_value: usize };
-
+    var ctx: Context = undefined;
+    var generic_lock: resolveLockType() = .{ .context = &ctx };
     const ArmV6mV8m = struct {
-        fn lock(context: *anyopaque) void {
-            const lock_ctx: *Context = @alignCast(@ptrCast(context));
+        fn lock(context: *Context) void {
             var val: usize = undefined;
             asm volatile (
                 \\mrs   %[val], primask
@@ -32,12 +64,11 @@ pub const default = struct {
                 :
                 : "r1", "cc"
             );
-            lock_ctx.isr_reg_value = val;
+            context.isr_reg_value = val;
         }
 
-        fn unlock(context: *anyopaque) void {
-            const lock_ctx: *Context = @alignCast(@ptrCast(context));
-            const val = lock_ctx.isr_reg_value;
+        fn unlock(context: *Context) void {
+            const val = context.isr_reg_value;
             asm volatile ("msr   primask, %[val]"
                 :
                 : [val] "r" (val),
@@ -48,8 +79,7 @@ pub const default = struct {
     const ArmV7mV7emV8mMain = struct {
         const MAX_ISR_PRIORITY = 0x20;
 
-        fn lock(context: *anyopaque) void {
-            const lock_ctx: *Context = @alignCast(@ptrCast(context));
+        fn lock(context: *Context) void {
             var val: usize = undefined;
             asm volatile (
                 \\mrs   %[val], basepri
@@ -59,12 +89,11 @@ pub const default = struct {
                 : [MAX_ISR_PRIORITY] "i" (MAX_ISR_PRIORITY),
                 : "r1", "cc"
             );
-            lock_ctx.isr_reg_value = val;
+            context.isr_reg_value = val;
         }
 
-        fn unlock(context: *anyopaque) void {
-            const lock_ctx: *Context = @alignCast(@ptrCast(context));
-            const val = lock_ctx.isr_reg_value;
+        fn unlock(context: *Context) void {
+            const val = context.isr_reg_value;
             asm volatile ("msr   basepri, %[val]"
                 :
                 : [val] "r" (val),
@@ -73,8 +102,7 @@ pub const default = struct {
     };
 
     const ArmV7aV7r = struct {
-        fn lock(context: *anyopaque) void {
-            const lock_ctx: *Context = @alignCast(@ptrCast(context));
+        fn lock(context: *Context) void {
             var val: usize = undefined;
             asm volatile (
                 \\mrs   r1, CPSR
@@ -85,12 +113,11 @@ pub const default = struct {
                 :
                 : "r1", "cc"
             );
-            lock_ctx.isr_reg_value = val;
+            context.isr_reg_value = val;
         }
 
-        fn unlock(context: *anyopaque) void {
-            const lock_ctx: *Context = @alignCast(@ptrCast(context));
-            const val = lock_ctx.isr_reg_value;
+        fn unlock(context: *Context) void {
+            const val = context.isr_reg_value;
             asm volatile (
                 \\mov r0, %[val]
                 \\mrs r1, CPSR
@@ -105,7 +132,7 @@ pub const default = struct {
         }
     };
 
-    pub fn get() Lock {
+    fn resolveLockType() type {
         const current_arch = builtin.cpu.arch;
         switch (current_arch) {
             .arm, .armeb, .thumb, .thumbeb => {},
@@ -113,35 +140,40 @@ pub const default = struct {
         }
 
         if (builtin.cpu.features.isEnabled(@intFromEnum(std.Target.arm.Feature.v6m)) or builtin.cpu.features.isEnabled(@intFromEnum(std.Target.arm.Feature.v8m))) {
-            return .{
-                .context = &ctx,
-                .lockFn = ArmV6mV8m.lock,
-                .unlockFn = ArmV6mV8m.unlock,
-            };
+            return GenericLock(
+                *Context,
+                ArmV6mV8m.lock,
+                ArmV6mV8m.unlock,
+            );
         } else if (builtin.cpu.features.isEnabled(@intFromEnum(std.Target.arm.Feature.v7m)) or builtin.cpu.features.isEnabled(@intFromEnum(std.Target.arm.Feature.v7em)) or builtin.cpu.features.isEnabled(@intFromEnum(std.Target.arm.Feature.v8m_main))) {
-            return .{
-                .context = &ctx,
-                .lockFn = ArmV7mV7emV8mMain.lock,
-                .unlockFn = ArmV7mV7emV8mMain.unlock,
-            };
+            return GenericLock(
+                *Context,
+                ArmV7mV7emV8mMain.lock,
+                ArmV7mV7emV8mMain.unlock,
+            );
         } else if (builtin.cpu.features.isEnabled(@intFromEnum(std.Target.arm.Feature.v7a)) or builtin.cpu.features.isEnabled(@intFromEnum(std.Target.arm.Feature.v7r))) {
-            return .{
-                .context = &ctx,
-                .lockFn = ArmV7aV7r.lock,
-                .unlockFn = ArmV7aV7r.unlock,
-            };
+            return GenericLock(
+                *Context,
+                ArmV7aV7r.lock,
+                ArmV7aV7r.unlock,
+            );
         } else {
             @compileError(std.fmt.comptimePrint("Unsupported ARM CPU for built in lock support: {any}", .{builtin.cpu}));
         }
+    }
+    pub fn get() AnyLock {
+        return generic_lock.any();
     }
 };
 
 /// Empty lock implementation that allows RTT to be used without lock protection
 pub const empty = struct {
-    fn lock(_: *const anyopaque) void {}
-    fn unlock(_: *const anyopaque) void {}
+    const Context = @TypeOf({});
+    fn lock(_: Context) void {}
+    fn unlock(_: Context) void {}
+    var generic_lock: GenericLock(Context, lock, unlock) = .{ .context = {} };
 
-    pub fn get() Lock {
-        return .{ .context = @constCast(@ptrCast(&{})), .lockFn = lock, .unlockFn = unlock };
+    pub fn get() AnyLock {
+        return generic_lock.any();
     }
 };

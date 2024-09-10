@@ -24,20 +24,18 @@ fn blinkLed(led_gpio: *Pin) void {
 
 var pretend_locked: bool = false;
 
-fn pretendLock(context: *anyopaque) void {
-    const ctx: *bool = @alignCast(@ptrCast(context));
-    ctx.* = true;
+const Context = *bool;
+
+fn pretendLock(context: Context) void {
+    context.* = true;
 }
 
-fn pretendUnlock(context: *anyopaque) void {
-    const ctx: *bool = @alignCast(@ptrCast(context));
-    ctx.* = false;
+fn pretendUnlock(context: Context) void {
+    context.* = false;
 }
 
-const pretend_lock: rtt.Lock = .{
+var pretend_lock: rtt.GenericLock(Context, pretendLock, pretendUnlock) = .{
     .context = &pretend_locked,
-    .lockFn = pretendLock,
-    .unlockFn = pretendUnlock,
 };
 
 // Configure RTT with specific sizes/names for up and down channels (2 of each) as
@@ -51,12 +49,15 @@ const rtt_instance = rtt.RTT(.{
         .{ .name = "Terminal", .mode = .BlockIfFull, .buffer_size = 512 },
         .{ .name = "Down2", .mode = .BlockIfFull, .buffer_size = 1024 },
     },
-    .exclusive_access = pretend_lock,
+    .exclusive_access = pretend_lock.any(),
     .linker_section = ".rtt_cb",
 });
 
 // Configure RTT with all default settings:
 // const rtt_instance = rtt.RTT(.{});
+
+// Configure RTT with default settings but disable exclusive access protection
+// const rtt_instance = rtt.RTT(.{ .exclusive_access = null });
 
 const Error = error{BufferOverflow};
 fn getLineBlocking(comptime max_line_size: usize, reader: anytype, writer: anytype) !void {

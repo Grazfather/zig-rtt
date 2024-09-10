@@ -2,3 +2,4 @@
 zig-out
 segger-rtt
 debug.*
+flash_fw.sh

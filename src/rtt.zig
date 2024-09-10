@@ -1,6 +1,7 @@
 const std = @import("std");
 const lock = @import("lock.zig");
-pub const Lock = lock.Lock;
+pub const AnyLock = lock.AnyLock;
+pub const GenericLock = lock.GenericLock;
 
 /// Header that indicates to the connected probe how many up/down channels are in use.
 ///
@@ -50,7 +51,7 @@ pub const channel = struct {
     /// Implements a ring buffer of size - 1 bytes, as this implementation
     /// does not fill up the buffer in order to avoid the problem of being unable to
     /// distinguish between full and empty.
-    fn Up(comptime exclusive_access_: Lock) type {
+    fn Up(comptime exclusive_access_: AnyLock) type {
         return extern struct {
             /// Name is optional and is not required by the spec. Standard names so far are:
             /// "Terminal", "SysView", "J-Scope_t4i4"
@@ -96,7 +97,7 @@ pub const channel = struct {
             }
 
             const WriteError = error{};
-            const Writer = std.io.GenericWriter(*Self, WriteError, write);
+            const Writer = std.io.GenericWriter(*Self, WriteError, writeAllowDroppedData);
 
             /// Writes up to available space left in buffer for reading by probe, returning number of bytes
             /// written.
@@ -154,10 +155,33 @@ pub const channel = struct {
                 return count;
             }
 
-            /// Behavior depends on up channel's mode, however write always returns
-            /// the length of bytes indicating all bytes were "written" even if they were
-            /// skipped. Dropped data due to a full buffer is not considered an error.
+            /// Behavior depends on up channel's mode, attempts to write all
+            /// bytes to the RTT control block, and returns how many it successfully wrote.
+            /// Writing less than requested number of bytes is not an error.
             fn write(self: *Self, bytes: []const u8) WriteError!usize {
+                exclusive_access.lockFn(exclusive_access.context);
+                switch (self.mode()) {
+                    .NoBlockSkip => {
+                        if (bytes.len <= self.availableSpace()) {
+                            return self.writeAvailable(bytes);
+                        } else return 0;
+                    },
+                    .NoBlockTrim => {
+                        return self.writeAvailable(bytes);
+                    },
+                    .BlockIfFull => {
+                        return self.writeBlocking(bytes);
+                    },
+                    _ => unreachable,
+                }
+                exclusive_access.unlockFn(exclusive_access.context);
+                return bytes.len;
+            }
+
+            /// Same as write, but allows silently dropping data and always returns
+            /// the length of bytes regardless of if all bytes were actually written. This
+            /// is to keep a GenericWriter from blocking indefinitely when a probe isn't connected.
+            fn writeAllowDroppedData(self: *Self, bytes: []const u8) WriteError!usize {
                 exclusive_access.lockFn(exclusive_access.context);
                 switch (self.mode()) {
                     .NoBlockSkip => {
@@ -202,7 +226,7 @@ pub const channel = struct {
     /// Implements a ring buffer of size - 1 bytes, as this implementation
     /// does not fill up the buffer in order to avoid the problem of being unable to
     /// distinguish between full and empty.
-    fn Down(comptime exclusive_access_: Lock) type {
+    fn Down(comptime exclusive_access_: AnyLock) type {
         return extern struct {
             /// Name is optional and is not required by the spec. Standard names so far are:
             /// "Terminal", "SysView", "J-Scope_t4i4"
@@ -355,7 +379,7 @@ fn BuildBufferStorageType(comptime up_channels: []const channel.Config, comptime
 
 /// Creates a control block struct for the given channel configs. Buffer storage is also contained within this struct, although
 /// per the RTT spec it doesn't have to be.
-fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_channels: []const channel.Config, comptime exclusive_access: Lock) type {
+fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_channels: []const channel.Config, comptime exclusive_access: AnyLock) type {
     if (up_channels.len == 0 or down_channels.len == 0) {
         @compileError("Must have at least 1 up and down channel configured");
     }
@@ -392,14 +416,14 @@ fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_chan
     };
 }
 
-/// Compile time configuration of RTT
+/// Compile time configuration of RTT instance
 pub const Config = struct {
-    up_channels: []const channel.Config = &[_]channel.Config{.{ .name = "Terminal", .buffer_size = 256, .mode = .NoBlockSkip }},
-    down_channels: []const channel.Config = &[_]channel.Config{.{ .name = "Terminal", .buffer_size = 256, .mode = .BlockIfFull }},
+    up_channels: []const channel.Config = &[_]channel.Config{.{ .name = "Terminal", .buffer_size = 1024, .mode = .NoBlockSkip }},
+    down_channels: []const channel.Config = &[_]channel.Config{.{ .name = "Terminal", .buffer_size = 16, .mode = .BlockIfFull }},
     /// Optionally supply a custom implementation of exclusive access protection (lock/unlock),
     /// defaults to original Segger lock implementation when not provided, disables lock protection when
     /// provided with null
-    exclusive_access: ?Lock = lock.default.get(),
+    exclusive_access: ?AnyLock = lock.default.get(),
     /// Optionall place the RTT control block (and buffers) in a specific linker section
     linker_section: ?[]const u8 = null,
 };
