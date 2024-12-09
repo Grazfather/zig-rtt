@@ -23,11 +23,11 @@ const Header = extern struct {
         // Ensure no memory reordering can occur and all accesses are finished before
         // marking block "valid" and writing header string. This prevents the JLINK
         // from finding a "valid" block while offets/pointers aren't yet valid.
-        @fence(std.builtin.AtomicOrder.seq_cst);
+        asm volatile ("DMB");
         for (0..init_str.len) |i| {
             self.id[i] = init_str[init_str.len - i - 1];
         }
-        @fence(std.builtin.AtomicOrder.seq_cst);
+        asm volatile ("DMB");
     }
 };
 
@@ -84,7 +84,7 @@ pub const channel = struct {
                 self.setMode(mode_);
 
                 // Ensure buffer pointer is set last and can't be reordered
-                @fence(std.builtin.AtomicOrder.seq_cst);
+                asm volatile ("DMB");
                 self.buffer = buffer.ptr;
             }
 
@@ -140,7 +140,7 @@ pub const channel = struct {
 
                 // Force data write to be complete before writing the <WrOff>, in case CPU
                 // is allowed to change the order of memory accesses
-                @fence(std.builtin.AtomicOrder.seq_cst);
+                asm volatile ("DMB");
                 self.write_offset = write_offset;
                 return bytes_written;
             }
@@ -258,7 +258,7 @@ pub const channel = struct {
                 self.setMode(mode_);
 
                 // Ensure buffer pointer is set last and can't be reordered
-                @fence(std.builtin.AtomicOrder.seq_cst);
+                asm volatile ("DMB");
                 self.buffer = buffer.ptr;
             }
 
@@ -310,7 +310,7 @@ pub const channel = struct {
 
                 // Force data write to be complete before writing the read_offset, in case CPU
                 // is allowed to change the order of memory accesses
-                @fence(std.builtin.AtomicOrder.seq_cst);
+                asm volatile ("DMB");
                 self.read_offset = read_offset;
 
                 exclusive_access.unlockFn(exclusive_access.context);
@@ -410,7 +410,7 @@ fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_chan
                 );
             }
             // Prevent compiler from re-ordering header init function as it must come last
-            @fence(std.builtin.AtomicOrder.seq_cst);
+            asm volatile ("DMB");
             self.header.init(up_channels.len, down_channels.len);
         }
     };

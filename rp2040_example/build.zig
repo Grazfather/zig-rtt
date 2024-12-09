@@ -1,14 +1,19 @@
 const std = @import("std");
 
-const MicroZig = @import("microzig/build");
-const rp2040 = @import("microzig/bsp/raspberrypi/rp2040");
+const microzig = @import("microzig");
+
+const MicroBuild = microzig.MicroBuild(.{
+    .rp2xxx = true,
+});
 
 pub fn build(b: *std.Build) void {
-    const mz = MicroZig.init(b, .{});
+    const mz_dep = b.dependency("microzig", .{});
+    const mz = MicroBuild.init(b, mz_dep) orelse unreachable;
+
     const optimize = b.standardOptimizeOption(.{});
-    const firmware = mz.add_firmware(b, .{
+    const firmware = mz.add_firmware(.{
         .name = "rtt_example",
-        .target = rp2040.boards.raspberrypi.pico,
+        .target = mz.ports.rp2xxx.boards.raspberrypi.pico,
         .optimize = optimize,
         .root_source_file = b.path("src/main.zig"),
     });
@@ -16,6 +21,6 @@ pub fn build(b: *std.Build) void {
     const rtt_dep = b.dependency("rtt", .{}).module("rtt");
     firmware.add_app_import("rtt", rtt_dep, .{});
 
-    mz.install_firmware(b, firmware, .{});
-    mz.install_firmware(b, firmware, .{ .format = .elf });
+    mz.install_firmware(firmware, .{});
+    mz.install_firmware(firmware, .{ .format = .elf });
 }
