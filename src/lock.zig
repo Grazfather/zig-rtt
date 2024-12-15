@@ -48,7 +48,9 @@ pub const AnyLock = struct {
 
 /// Provides the same locking mechanism as included by the original RTT code.
 ///
-/// The default lock behavior when none is provided explicitly.
+/// The default lock behavior when none is provided explicitly. Will error
+/// if platform doesn't have a default locking implementation and no user
+/// provided implementation (including none) is specified.
 pub const default = struct {
     const Context = struct { isr_reg_value: usize };
     var ctx: Context = undefined;
@@ -132,11 +134,18 @@ pub const default = struct {
         }
     };
 
+    /// Allows an intelligent compile error when someone attempts to use RTT on a platform where "default" locking isn't supported yet
+    const ErrorLock = struct {
+        fn error_lock_unlock(_: *Context) void {
+            @compileError(std.fmt.comptimePrint("Unsupported architecture for built in lock support: {any}, please provide custom locking support via Config.exclusive_access field", .{builtin.cpu.arch}));
+        }
+    };
+
     fn resolveLockType() type {
         const current_arch = builtin.cpu.arch;
         switch (current_arch) {
             .arm, .armeb, .thumb, .thumbeb => {},
-            else => @compileError(std.fmt.comptimePrint("Unsupported architecture for built in lock support: {any}", .{builtin.cpu.arch})),
+            else => return GenericLock(*Context, ErrorLock.error_lock_unlock, ErrorLock.error_lock_unlock),
         }
 
         if (builtin.cpu.features.isEnabled(@intFromEnum(std.Target.arm.Feature.v6m)) or builtin.cpu.features.isEnabled(@intFromEnum(std.Target.arm.Feature.v8m))) {
@@ -158,7 +167,7 @@ pub const default = struct {
                 ArmV7aV7r.unlock,
             );
         } else {
-            @compileError(std.fmt.comptimePrint("Unsupported ARM CPU for built in lock support: {any}", .{builtin.cpu}));
+            return GenericLock(*Context, ErrorLock.error_lock_unlock, ErrorLock.error_lock_unlock);
         }
     }
     pub fn get() AnyLock {

@@ -1,5 +1,7 @@
 const std = @import("std");
 const lock = @import("lock.zig");
+const memory_barrier = @import("memory_barrier.zig");
+const MemoryBarrierFn = memory_barrier.MemoryBarrierFn;
 pub const AnyLock = lock.AnyLock;
 pub const GenericLock = lock.GenericLock;
 
@@ -14,7 +16,7 @@ const Header = extern struct {
     max_up_channels: usize,
     max_down_channels: usize,
 
-    pub fn init(self: *Header, comptime max_up_channels: usize, comptime max_down_channels: usize) void {
+    pub fn init(self: *Header, comptime max_up_channels: usize, comptime max_down_channels: usize, comptime barrierFn: MemoryBarrierFn) void {
         self.max_up_channels = max_up_channels;
         self.max_down_channels = max_down_channels;
 
@@ -23,11 +25,11 @@ const Header = extern struct {
         // Ensure no memory reordering can occur and all accesses are finished before
         // marking block "valid" and writing header string. This prevents the JLINK
         // from finding a "valid" block while offets/pointers aren't yet valid.
-        asm volatile ("DMB");
+        barrierFn();
         for (0..init_str.len) |i| {
             self.id[i] = init_str[init_str.len - i - 1];
         }
-        asm volatile ("DMB");
+        barrierFn();
     }
 };
 
@@ -51,7 +53,7 @@ pub const channel = struct {
     /// Implements a ring buffer of size - 1 bytes, as this implementation
     /// does not fill up the buffer in order to avoid the problem of being unable to
     /// distinguish between full and empty.
-    fn Up(comptime exclusive_access_: AnyLock) type {
+    fn Up(comptime exclusive_access_: AnyLock, comptime barrierFn: MemoryBarrierFn) type {
         return extern struct {
             /// Name is optional and is not required by the spec. Standard names so far are:
             /// "Terminal", "SysView", "J-Scope_t4i4"
@@ -84,7 +86,7 @@ pub const channel = struct {
                 self.setMode(mode_);
 
                 // Ensure buffer pointer is set last and can't be reordered
-                asm volatile ("DMB");
+                barrierFn();
                 self.buffer = buffer.ptr;
             }
 
@@ -140,7 +142,7 @@ pub const channel = struct {
 
                 // Force data write to be complete before writing the <WrOff>, in case CPU
                 // is allowed to change the order of memory accesses
-                asm volatile ("DMB");
+                barrierFn();
                 self.write_offset = write_offset;
                 return bytes_written;
             }
@@ -226,7 +228,7 @@ pub const channel = struct {
     /// Implements a ring buffer of size - 1 bytes, as this implementation
     /// does not fill up the buffer in order to avoid the problem of being unable to
     /// distinguish between full and empty.
-    fn Down(comptime exclusive_access_: AnyLock) type {
+    fn Down(comptime exclusive_access_: AnyLock, comptime barrierFn: MemoryBarrierFn) type {
         return extern struct {
             /// Name is optional and is not required by the spec. Standard names so far are:
             /// "Terminal", "SysView", "J-Scope_t4i4"
@@ -258,7 +260,7 @@ pub const channel = struct {
                 self.setMode(mode_);
 
                 // Ensure buffer pointer is set last and can't be reordered
-                asm volatile ("DMB");
+                barrierFn();
                 self.buffer = buffer.ptr;
             }
 
@@ -379,7 +381,7 @@ fn BuildBufferStorageType(comptime up_channels: []const channel.Config, comptime
 
 /// Creates a control block struct for the given channel configs. Buffer storage is also contained within this struct, although
 /// per the RTT spec it doesn't have to be.
-fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_channels: []const channel.Config, comptime exclusive_access: AnyLock) type {
+fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_channels: []const channel.Config, comptime exclusive_access: AnyLock, comptime barrierFn: MemoryBarrierFn) type {
     if (up_channels.len == 0 or down_channels.len == 0) {
         @compileError("Must have at least 1 up and down channel configured");
     }
@@ -387,8 +389,8 @@ fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_chan
     const BufferContainerType = BuildBufferStorageType(up_channels, down_channels);
     return extern struct {
         header: Header,
-        up_channels: [up_channels.len]channel.Up(exclusive_access),
-        down_channels: [down_channels.len]channel.Down(exclusive_access),
+        up_channels: [up_channels.len]channel.Up(exclusive_access, barrierFn),
+        down_channels: [down_channels.len]channel.Down(exclusive_access, barrierFn),
         buffers: BufferContainerType,
 
         pub fn init(self: *@This()) void {
@@ -410,8 +412,8 @@ fn ControlBlock(comptime up_channels: []const channel.Config, comptime down_chan
                 );
             }
             // Prevent compiler from re-ordering header init function as it must come last
-            asm volatile ("DMB");
-            self.header.init(up_channels.len, down_channels.len);
+            barrierFn();
+            self.header.init(up_channels.len, down_channels.len, barrierFn);
         }
     };
 }
@@ -422,9 +424,17 @@ pub const Config = struct {
     down_channels: []const channel.Config = &[_]channel.Config{.{ .name = "Terminal", .buffer_size = 16, .mode = .BlockIfFull }},
     /// Optionally supply a custom implementation of exclusive access protection (lock/unlock),
     /// defaults to original Segger lock implementation when not provided, disables lock protection when
-    /// provided with null
+    /// provided with null.
+    ///
+    /// If trying to run RTT on a platform not yet supported by the "defaults" this must be provided or set to null
     exclusive_access: ?AnyLock = lock.default.get(),
-    /// Optionall place the RTT control block (and buffers) in a specific linker section
+    /// Optionally supply a custom implementation of a memory barrier function,
+    /// defaults to original Segger memory barrier implementation when not provided, disables memory barriers
+    /// when provided with null
+    ///
+    /// If trying to run RTT on a platform not yet supported by the "defaults" this must be provided or set to null
+    memory_barrier_fn: ?MemoryBarrierFn = memory_barrier.resolveMemoryBarrier().memory_barrier_fn,
+    /// Optionally place the RTT control block (and buffers) in a specific linker section
     linker_section: ?[]const u8 = null,
 };
 
@@ -432,11 +442,13 @@ pub const Config = struct {
 pub fn RTT(comptime config: Config) type {
     return struct {
         const exclusive_access = config.exclusive_access orelse lock.empty.get();
+        const mb_fn = config.memory_barrier_fn orelse memory_barrier.emptyMemoryBarrier;
         var control_block: ControlBlock(
             config.up_channels,
             config.down_channels,
             exclusive_access,
-        ) = undefined; // TODO: Place at specific linker section
+            mb_fn,
+        ) = undefined;
 
         comptime {
             if (config.linker_section) |section| @export(control_block, .{
@@ -450,8 +462,8 @@ pub fn RTT(comptime config: Config) type {
             control_block.init();
         }
 
-        pub const WriteError = channel.Up(exclusive_access).WriteError;
-        pub const Writer = channel.Up(exclusive_access).Writer;
+        pub const WriteError = channel.Up(exclusive_access, mb_fn).WriteError;
+        pub const Writer = channel.Up(exclusive_access, mb_fn).Writer;
 
         /// Write bytes to a given up channel
         pub fn write(comptime channel_number: usize, bytes: []const u8) WriteError!usize {
@@ -468,8 +480,8 @@ pub fn RTT(comptime config: Config) type {
             return control_block.up_channels[channel_number].writer();
         }
 
-        pub const ReadError = channel.Down(exclusive_access).ReadError;
-        pub const Reader = channel.Down(exclusive_access).Reader;
+        pub const ReadError = channel.Down(exclusive_access, mb_fn).ReadError;
+        pub const Reader = channel.Down(exclusive_access, mb_fn).Reader;
 
         /// Read bytes from a given down channel
         pub fn read(comptime channel_number: usize, bytes: []u8) ReadError!usize {
