@@ -84,6 +84,8 @@ pub const channel = struct {
                 self.name = name;
                 self.size = buffer.len;
                 self.setMode(mode_);
+                self.write_offset = 0;
+                self.read_offset = 0;
 
                 // Ensure buffer pointer is set last and can't be reordered
                 barrierFn();
@@ -258,6 +260,8 @@ pub const channel = struct {
                 self.name = name;
                 self.size = buffer.len;
                 self.setMode(mode_);
+                self.write_offset = 0;
+                self.read_offset = 0;
 
                 // Ensure buffer pointer is set last and can't be reordered
                 barrierFn();
