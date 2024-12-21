@@ -57,7 +57,7 @@ pub const channel = struct {
         return extern struct {
             /// Name is optional and is not required by the spec. Standard names so far are:
             /// "Terminal", "SysView", "J-Scope_t4i4"
-            name: [*]const u8,
+            name: [*:0]const u8,
 
             buffer: [*]u8,
 
@@ -234,7 +234,7 @@ pub const channel = struct {
         return extern struct {
             /// Name is optional and is not required by the spec. Standard names so far are:
             /// "Terminal", "SysView", "J-Scope_t4i4"
-            name: [*]const u8,
+            name: [*:0]const u8,
 
             buffer: [*]u8,
 
