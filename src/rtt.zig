@@ -164,6 +164,7 @@ pub const channel = struct {
             /// Writing less than requested number of bytes is not an error.
             fn write(self: *Self, bytes: []const u8) WriteError!usize {
                 exclusive_access.lockFn(exclusive_access.context);
+                defer exclusive_access.unlockFn(exclusive_access.context);
                 switch (self.mode()) {
                     .NoBlockSkip => {
                         if (bytes.len <= self.availableSpace()) {
@@ -178,7 +179,6 @@ pub const channel = struct {
                     },
                     _ => unreachable,
                 }
-                exclusive_access.unlockFn(exclusive_access.context);
                 return bytes.len;
             }
 
@@ -187,6 +187,7 @@ pub const channel = struct {
             /// is to keep a GenericWriter from blocking indefinitely when a probe isn't connected.
             fn writeAllowDroppedData(self: *Self, bytes: []const u8) WriteError!usize {
                 exclusive_access.lockFn(exclusive_access.context);
+                defer exclusive_access.unlockFn(exclusive_access.context);
                 switch (self.mode()) {
                     .NoBlockSkip => {
                         if (bytes.len <= self.availableSpace()) {
@@ -201,7 +202,6 @@ pub const channel = struct {
                     },
                     _ => unreachable,
                 }
-                exclusive_access.unlockFn(exclusive_access.context);
                 return bytes.len;
             }
 
@@ -285,6 +285,7 @@ pub const channel = struct {
             /// TODO: Does the channel's mode actually matter here?
             pub fn readAvailable(self: *Self, bytes: []u8) ReadError!usize {
                 exclusive_access.lockFn(exclusive_access.context);
+                defer exclusive_access.unlockFn(exclusive_access.context);
 
                 // The probe can change self.write_offset via memory modification at any time,
                 // so must perform a volatile read on this value.
@@ -318,8 +319,6 @@ pub const channel = struct {
                 // is allowed to change the order of memory accesses
                 asm volatile ("DMB");
                 self.read_offset = read_offset;
-
-                exclusive_access.unlockFn(exclusive_access.context);
 
                 return bytes_read;
             }
